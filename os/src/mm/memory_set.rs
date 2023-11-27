@@ -8,6 +8,7 @@ use crate::config::{
     KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
 };
 use crate::sync::UPSafeCell;
+use crate::task::{current_user_token, TaskManager, TASK_MANAGER};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -356,6 +357,13 @@ impl MapArea {
             current_vpn.step();
         }
     }
+
+    /// Check if there is an intersection with `start_va` and `end_va`
+    pub fn is_overlap_with(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        self.vpn_range.get_start() < end_vpn && self.vpn_range.get_end() > start_vpn
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Debug)]
@@ -384,6 +392,76 @@ pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
     let top = TRAMPOLINE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
     let bottom = top - KERNEL_STACK_SIZE;
     (bottom, top)
+}
+
+pub fn check_vpn_mapped(vpn: VirtPageNum) -> bool {
+    let token = current_user_token();
+    let page_table = PageTable::from_token(token);
+    match page_table.translate(vpn) {
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Check if the area is mapped
+pub fn check_area_mapped(_start: usize, _len: usize) -> bool {
+    let start_vpn = VirtPageNum::from(_start);
+    let end_vpn = VirtPageNum::from(_start + _len);
+    let mut vpn = start_vpn;
+
+    while vpn < end_vpn {
+        if check_vpn_mapped(vpn) {
+            trace!("kernel: sys_mmap: vpn {} is mapped!", vpn.0);
+            return true;
+        }
+        vpn.step();
+    }
+    false
+}
+
+/// Add the map between start_va and end_va
+pub fn add_map_area(start_va: VirtAddr, end_va: VirtAddr, port: usize) -> bool {
+    // tranform port into a MapPermisson
+    let mut map_perm = MapPermission::U;
+    if port & 0x1 != 0 {
+        map_perm |= MapPermission::R;
+    }
+    if port & 0x2 != 0 {
+        map_perm |= MapPermission::W;
+    }
+    if port & 0x4 != 0 {
+        map_perm |= MapPermission::X;
+    }
+
+    let curr_task = TaskManager::get_current_task();
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let memset = &mut inner.tasks[curr_task].memory_set;
+
+    for ar in memset.areas.iter() {
+        if ar.is_overlap_with(start_va, end_va) {
+            return false;
+        }
+    }
+
+    memset.insert_framed_area(start_va, end_va, map_perm);
+    true
+}
+
+/// Remove the map between start_va and end_va
+pub fn remove_map_area(start_va: VirtAddr, end_va: VirtAddr) -> bool {
+    let curr_task = TaskManager::get_current_task();
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let memset = &mut inner.tasks[curr_task].memory_set;
+
+    if let Some((idx, area)) = memset.areas.iter_mut().enumerate().find(|(_, area)| {
+        area.vpn_range.get_start() == start_va.floor() && area.vpn_range.get_end() == end_va.ceil()
+    }) {
+        area.unmap(&mut memset.page_table);
+        memset.areas.remove(idx);
+        return true;
+    }
+
+    false
 }
 
 /// remap test in kernel space

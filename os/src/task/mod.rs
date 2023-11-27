@@ -14,8 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_us;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -37,15 +39,15 @@ pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
     /// use inner value to get mutable access
-    inner: UPSafeCell<TaskManagerInner>,
+    pub inner: UPSafeCell<TaskManagerInner>,
 }
 
 /// The task manager inner in 'UPSafeCell'
-struct TaskManagerInner {
+pub struct TaskManagerInner {
     /// task list
-    tasks: Vec<TaskControlBlock>,
+    pub tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
-    current_task: usize,
+    pub current_task: usize,
 }
 
 lazy_static! {
@@ -79,6 +81,9 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        if next_task.start_time.is_none() {
+            next_task.start_time = Some(get_time_us() / 1000);
+        }
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -133,6 +138,45 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    /// TODO: It seems that I can't borrow value from local variable in `get_current_memset`, How to solve it?
+    // pub fn get_current_memset() -> &'static mut MemorySet{
+    //     let mut inner = TASK_MANAGER.inner.exclusive_access();
+    //     &mut inner.tasks[inner.current_task].memory_set
+    // }
+
+    /// Get current task
+    pub fn get_current_task() -> usize {
+        let inner = TASK_MANAGER.inner.exclusive_access();
+        inner.current_task
+    }
+
+    /// Get current task's status
+    fn get_current_task_status(&self) -> TaskStatus {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_status
+    }
+
+    /// Get syscall count
+    fn get_current_syscall_count(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = TASK_MANAGER.inner.exclusive_access();
+        inner.tasks[inner.current_task].syscall_count
+    }
+
+    /// Update current syscall count
+    fn update_current_syscall_count(&self, syscall_id: usize) {
+        let mut inner = TASK_MANAGER.inner.exclusive_access();
+        let cur = inner.current_task;
+
+        inner.tasks[cur].syscall_count[syscall_id] += 1;
+    }
+
+    /// Get start time of current task
+    fn get_task_start_time(&self) -> usize {
+        let inner = TASK_MANAGER.inner.exclusive_access();
+        inner.tasks[inner.current_task].start_time.unwrap()
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -141,6 +185,9 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            if inner.tasks[current].start_time.is_none() {
+                inner.tasks[current].start_time = Some(get_time_us() / 1000);
+            }
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -201,4 +248,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Get current task's status
+pub fn get_current_task_status() -> TaskStatus {
+    TASK_MANAGER.get_current_task_status()
+}
+
+/// Get syscall count of current task
+pub fn get_current_syscall_count() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_current_syscall_count()
+}
+
+/// Update syscall count of current task
+pub fn update_current_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.update_current_syscall_count(syscall_id);
+}
+
+/// Get start time of current task
+pub fn get_task_start_time() -> usize {
+    TASK_MANAGER.get_task_start_time()
 }

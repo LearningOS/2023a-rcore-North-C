@@ -1,5 +1,4 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
-
 use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -8,13 +7,21 @@ use bitflags::*;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
+        /// present
         const V = 1 << 0;
+        /// readable
         const R = 1 << 1;
+        /// writable
         const W = 1 << 2;
+        /// execute neccessary
         const X = 1 << 3;
+        /// user accessible
         const U = 1 << 4;
+        /// user global
         const G = 1 << 5;
+        /// accessible
         const A = 1 << 6;
+        /// dirty
         const D = 1 << 7;
     }
 }
@@ -171,3 +178,12 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
     }
     v
 }
+
+// pub fn get_ppn_ref_mut<T>(token: usize, ptr: *const T) -> &'static mut T {
+//     let page_table = PageTable::from_token(token);
+//     let ppn = page_table
+//         .translate(VirtAddr::from(ptr as usize).floor())
+//         .unwrap()
+//         .ppn();
+//     ppn.get_mut()
+// }
